@@ -1,0 +1,446 @@
+function [varargout] = AdaptiveOSELM(varargin)
+
+%%%%%%%%%%% Macro definition
+%CLASSIFICATION=1;
+%Elm_Type=1;
+switch lower(varargin{1})
+
+    case 'init'
+      disp('Initialization training')  
+      ActivationFunction = varargin{2};
+      maxHNeurons = varargin{3};
+      train_data=varargin{4};
+      roselm=varargin{5};
+      CIW=varargin{6};
+      errorHN=[];
+      T0=train_data(:,1); P0=train_data(:,2:size(train_data,2));
+      nTrainingData0=size(P0,1);
+      %
+      if maxHNeurons<=1
+          nHiddenNeurons=rank(P0)
+      else
+          nHiddenNeurons=maxHNeurons;
+      end
+      nOutputNeurons=max(T0);
+      nClass=nOutputNeurons;
+      nInputNeurons=size(P0,2);
+      %%%%%%%%%% Processing the targets of training
+      temp_T=zeros(nTrainingData0,nClass);
+      for i = 1:nTrainingData0
+          temp_T(i,T0(i,1))=1;
+      end
+      %T0=temp_T*2-1;
+      T0=temp_T;
+      start_time_train=cputime;
+      %%%%%%%%%%% step 1 Initialization Phase
+      disp 'Initialization ';
+      str = sprintf('Size P0 row : %d : column %d\n',size(P0,1),size(P0,2));
+      disp(str);
+      switch roselm
+      case 1
+          %CIW=100;
+          IW = CIW*normrnd(0,1,nHiddenNeurons,nInputNeurons);
+          Bias = -diag(P0*IW')';
+      case 0
+          IW = rand(nHiddenNeurons,nInputNeurons)*2-1;
+          Bias = rand(1,nHiddenNeurons)*2-1;
+      case 2
+          IW = rand(nHiddenNeurons,nInputNeurons)*2-1;
+          Bias = rand(1,nHiddenNeurons);
+      case 3
+          IW = rand(nHiddenNeurons,nInputNeurons)*2-1;
+          Bias = rand(1,nHiddenNeurons)*1/3+1/11;     %%%%%%%%%%%%% for the cases of Image Segment and Satellite Image
+      case 4
+          IW = rand(nHiddenNeurons,nInputNeurons)*2-1;    
+         Bias = rand(1,nHiddenNeurons)*1/20+1/60;    %%%%%%%%%%%%% for the case of DNA and MNIST
+      end
+      switch lower(ActivationFunction)
+          case{'rbf'}
+              H0 = RBFun(P0,IW,Bias);
+          case{'sig'}
+              H0 = SigActFun(P0,IW,Bias);
+          case{'soft'}
+              H0 = SoftMaxFun(P0,IW,Bias);
+          case{'sin'}
+              H0 = SinActFun(P0,IW,Bias);
+          case{'hardlim'}
+              H0 = HardlimActFun(P0,IW,Bias);
+              H0 = double(H0);
+      end
+      
+      M = pinv(H0' * H0);
+      %M = inv(H0' * H0);
+      %beta = pinv(H0) * T0;
+       C=10^3;
+       beta = (eye(size(H0',1))/C+H0' * H0) \ H0' * T0;
+      end_time_train=cputime;
+      TrainingTime=end_time_train-start_time_train;
+      hidError= round(norm(H0*beta-T0)/0.1)*0.1;
+      errorHN=[errorHN,hidError];
+      str = sprintf('Hidden error : %f \n',hidError);
+      disp(str);
+      switch lower(ActivationFunction)
+          case{'rbf'}
+              HTrain = RBFun(P0, IW, Bias);
+          case{'sig'}
+              HTrain = SigActFun(P0, IW, Bias);
+          case{'soft'}
+              HTrain = SoftMaxFun(P0, IW, Bias);
+          case{'sin'}
+              HTrain = SinActFun(P0, IW, Bias);
+          case{'hardlim'}
+              HTrain = HardlimActFun(P0, IW, Bias);
+      end
+      Y=HTrain * beta;
+      MissClassificationRate_Training=0;
+      m_expected=zeros(1,nTrainingData0);
+      m_actual=zeros(1,nTrainingData0);
+      for i = 1 : nTrainingData0
+          [x, label_index_expected]=max(T0(i,:));
+          [x, label_index_actual]=max(Y(i,:));
+          m_expected(1,i)=label_index_expected;
+          m_actual(1,i)=label_index_actual;
+          if label_index_actual~=label_index_expected
+              MissClassificationRate_Training=MissClassificationRate_Training+1;
+%               str = sprintf('Expected %d but actual %d\n',label_index_expected,label_index_actual);
+%               disp(str);
+          end
+      end
+      TrainingAccuracy=1-MissClassificationRate_Training/nTrainingData0
+      %edit_dist=levenshtein(m_actual,m_expected)/nTrainingData0
+      Model.OutputWeight=beta;
+      Model.M=M;
+      Model.hiddenError=errorHN;
+      Model.nHiddenNeurons=nHiddenNeurons;
+      Model.nInputNeurons=nInputNeurons;
+      Model.IW=IW;
+      Model.Bias=Bias;
+      Model.nClass=nOutputNeurons;
+      Model.CIW=CIW;
+      Model.ActivationFunction=ActivationFunction;
+      Model.roselm=roselm;
+      Model.rank_H0=rank(H0);
+      Model.rank_P0=rank(P0);
+      %Model.confusion_mat=confusionmat(m_expected,m_actual);
+      Model.TrainingTime=TrainingTime;
+      Model.TrainingAccuracy=TrainingAccuracy;
+      %Model.edit_dist=edit_dist;
+      Model.m_actual=m_actual;
+      Model.m_expected=m_expected;
+      varargout{1}=TrainingTime;
+      varargout{2}=TrainingAccuracy;
+      varargout{3}=Model;
+%       varargout{4}=T0;
+%       varargout{5}=P0;
+%       varargout{6}=Y;
+      %
+    case 'seq'
+      disp('Sequential training')   
+      Model = varargin{2};
+      Block = varargin{3};
+      train_data=varargin{4};
+      dHN=varargin{5};
+      wHN=varargin{6};
+      wHNctr=size(wHN,2);
+      ctrHN=1;
+      ctrB=1;
+      errorHN=Model.hiddenError;
+      %
+      T=train_data(:,1); P=train_data(:,2:size(train_data,2));
+      nTrainingData=size(P,1);
+      if max(T)<=Model.nClass
+          nClass=Model.nClass;
+      else
+          nClass=max(T);
+      end
+      %
+      temp_T=zeros(size(T,1),nClass);
+      for i = 1:size(T,1)
+          temp_T(i,T(i,1))=1;
+      end
+      %Tn=temp_T*2-1;
+      T=temp_T;
+      roselm=Model.roselm;
+      nHiddenNeurons=Model.nHiddenNeurons;
+      nOutputNeurons=Model.nClass;
+      IW=Model.IW;
+      Bias=Model.Bias;
+      beta=Model.OutputWeight;
+      M=Model.M;
+      CIW=Model.CIW;
+      ActivationFunction=Model.ActivationFunction;
+      nInputNeurons=Model.nInputNeurons;
+      j=1;
+      %
+      start_time_train=cputime;
+      for n = 1 : Block : nTrainingData
+          %
+          str = sprintf('\nSequential Learning Phase : %d %d',j,n);
+          disp(str);
+          if (n+Block-1) > nTrainingData
+              Pn = P(n:nTrainingData,:);    Tn = T(n:nTrainingData,:);
+              Block = size(Pn,1);             %%%% correct the block size
+          else
+              Pn = P(n:(n+Block-1),:);    Tn = T(n:(n+Block-1),:);
+          end
+      %         
+      if nOutputNeurons < nClass
+          disp 'Sequential - New class label - Proceed';
+          dClass=nClass-nOutputNeurons;
+          nOutputNeurons=nOutputNeurons+dClass;
+          beta = [beta,zeros(size(beta,1),dClass)]; % this is our proposed patching method for beta%1
+          %
+          if size(Pn,2)==nInputNeurons
+              disp 'Sequential - Same Attributes';
+          elseif  size(Pn,2)>nInputNeurons
+               disp 'Sequential - Different Attributes';
+              dInput=size(Pn,2)-nInputNeurons;
+              nInputNeurons=nInputNeurons+dInput;
+              if roselm==1
+                  %CIW=100;
+                  IW = [IW,CIW*normrnd(0,1,nHiddenNeurons,dInput)];
+                  
+              else
+                  IW = [IW,rand(nHiddenNeurons,dInput)*2-1]; % this is the patching
+              end
+              
+          end
+          %
+      else
+          disp 'Sequential - Same Class label';
+          %
+          if size(Pn,2)==nInputNeurons
+              disp 'Sequential - Same Attributes';
+          elseif  size(Pn,2)>nInputNeurons
+               disp 'Sequential - Different Attributes';
+              dInput=size(Pn,2)-nInputNeurons;
+              nInputNeurons=nInputNeurons+dInput;
+              if roselm==1
+                  %CIW=100;
+                  IW = [IW,CIW*normrnd(0,1,nHiddenNeurons,dInput)];
+                  
+              else
+                  IW = [IW,rand(nHiddenNeurons,dInput)*2-1]; % this is the patching
+              end
+              
+          end 
+      end
+      j=j+1; 
+      switch lower(ActivationFunction)
+          case{'rbf'}
+              Hn = RBFun(Pn,IW,Bias);
+          case{'sig'}
+              Hn = SigActFun(Pn,IW,Bias);              
+          case{'soft'}
+              Hn = SoftMaxFun(Pn,IW,Bias);
+          case{'sin'}
+              Hn = SinActFun(Pn,IW,Bias);
+          case{'hardlim'}
+              Hn = HardlimActFun(Pn,IW,Bias);
+      end
+      %
+      M = M - M * Hn' * (eye(Block) + Hn * M * Hn')^(-1) * Hn * M;
+      %M = M - M * Hn' * pinv((eye(Block) + Hn * M * Hn')) * Hn * M;
+      beta = beta + M * Hn' * (Tn - Hn * beta);
+      hidError= round(norm(Hn*beta-Tn)/0.1)*0.1;
+      errorHN=[errorHN,hidError];
+      str = sprintf('Hidden error on sequential : %f \n',hidError);
+      disp(str);
+      if ctrB == wHN(1,ctrHN)
+          if dHN>0 && wHNctr>0
+              
+              % dHN=nTrainingData;
+              % dHN=Block;
+              %dHN=1000;
+              str = sprintf('Increment Hidden Nodes : %f \n',dHN);
+              nHiddenNeurons=nHiddenNeurons+dHN;
+              disp(str);
+              switch roselm
+                  case 1
+                      %CIW=100;
+                      IWZ1=CIW*normrnd(0,1,dHN,nInputNeurons);
+                      %BiasZ1 = rand(1,dHN)*2-1;
+                      BiasZ1=-diag(P*IWZ1')';
+                      size(BiasZ1)
+                  case 0
+                      IWZ1=rand(dHN,nInputNeurons)*2-1;
+                      BiasZ1 = rand(1,dHN)*2-1;
+                  case 2
+                      IWZ1=rand(dHN,nInputNeurons)*2-1;
+                      BiasZ1 = rand(1,dHN);
+                  case 3
+                      IWZ1=rand(dHN,nInputNeurons)*2-1;
+                      BiasZ1 = rand(1,dHN)*1/3+1/11;     %%%%%%%%%%%%% for the cases of Image Segment and Satellite Image
+                  case 4
+                      IWZ1=rand(dHN,nInputNeurons)*2-1;
+                      BiasZ1 = rand(1,dHN)*1/20+1/60;    %%%%%%%%%%%%% for the case of DNA and MNIST
+              end
+              
+              switch lower(ActivationFunction)
+                  case{'rbf'}
+                      HZ1 = RBFun(Pn,IWZ1,BiasZ1);
+                  case{'sig'}
+                      HZ1 = SigActFun(Pn,IWZ1,BiasZ1);
+                  case{'soft'}
+                      HZ1 = SoftMaxFun(Pn,IWZ1,BiasZ1);
+                  case{'sin'}
+                      HZ1 = SinActFun(Pn,IWZ1,BiasZ1);
+                  case{'hardlim'}
+                      HZ1 = HardlimActFun(Pn,IWZ1,BiasZ1);
+              end
+              S=HZ1'*HZ1-HZ1'*Hn*M*Hn'*HZ1;
+              %           M22=S^(-1);
+              M22=pinv(S);
+              M11 = M+M*Hn'*HZ1*M22*HZ1'*Hn*M;
+              M12=-M*Hn'*HZ1*M22;
+              M21=-M22*HZ1'*Hn*M;
+              betaU=beta+M*Hn'*(eye(Block)+HZ1*M22*HZ1'*(Hn*M*Hn'-eye(Block)))*(Tn-Hn*beta);
+              betaD=-M22*HZ1'*Hn*(beta+M*Hn'*(Tn-Hn*beta))+M22*HZ1'*Tn;
+              M=[M11,M12;M21,M22];
+              beta=[betaU;betaD];
+              Hn=[Hn,[zeros(size(Hn,1)-size(HZ1,1),dHN);HZ1]];
+              IW=[IW;IWZ1];
+              Bias=[Bias,BiasZ1];
+              hidError= round(norm(Hn*beta-Tn)/0.1)*0.1;
+              errorHN=[errorHN,hidError];
+              str = sprintf('Hidden error after increase hidden nodes : %f \n',hidError);
+              disp(str);
+              wHNctr=wHNctr-1;
+          end
+          if wHNctr>0 && dHN>0
+              ctrHN=ctrHN+1;
+          else
+              ctrHN=1;
+          end
+      end
+      ctrB=ctrB+1;
+      end
+      end_time_train=cputime;
+      TrainingTime=end_time_train-start_time_train;
+      
+      %
+      switch lower(ActivationFunction)
+          case{'rbf'}
+              HTrain = RBFun(P, IW, Bias);
+          case{'sig'}
+              HTrain = SigActFun(P, IW, Bias);
+          case{'soft'}
+              HTrain = SoftMaxFun(P, IW, Bias);
+          case{'sin'}
+              HTrain = SinActFun(P, IW, Bias);
+          case{'hardlim'}
+              HTrain = HardlimActFun(P, IW, Bias);
+      end
+      Y=HTrain * beta;
+      MissClassificationRate_Training=0;
+      m_expected=zeros(1,nTrainingData);
+      m_actual=zeros(1,nTrainingData);
+      for i = 1 : nTrainingData
+          [x, label_index_expected]=max(T(i,:));
+          [x, label_index_actual]=max(Y(i,:));
+          m_expected(1,i)=label_index_expected;
+          m_actual(1,i)=label_index_actual;
+          if label_index_actual~=label_index_expected
+              MissClassificationRate_Training=MissClassificationRate_Training+1;
+%               str = sprintf('Expected %d but actual %d\n',label_index_expected,label_index_actual);
+%               disp(str);
+          end
+      end
+      TrainingAccuracy=1-MissClassificationRate_Training/nTrainingData
+      %
+      %edit_dist=levenshtein(m_expected,m_actual)/nTrainingData
+      hidError= round(norm(HTrain*beta-T)/0.1)*0.1;
+      errorHN=[errorHN,hidError];
+      str = sprintf('Hidden error : %f \n',hidError);
+      disp(str);
+      %
+      Model.OutputWeight=beta;
+      Model.M=M;
+      Model.hiddenError=errorHN;
+      Model.nHiddenNeurons=nHiddenNeurons;
+      Model.nInputNeurons=nInputNeurons;
+      Model.IW=IW;
+      Model.Bias=Bias;
+      Model.CIW=CIW;
+      Model.nClass=nOutputNeurons;
+      Model.ActivationFunction=ActivationFunction;
+      Model.rank_HTrain=rank(HTrain);
+      Model.rank_P=rank(P);
+      %Model.confusion_mat=confusionmat(m_expected,m_actual);
+      Model.TrainingTime=TrainingTime;
+      Model.TrainingAccuracy=TrainingAccuracy;
+      %Model.edit_dist=edit_dist;
+      Model.m_actual=m_actual;
+      Model.m_expected=m_expected;
+      varargout{1}=TrainingTime;
+      varargout{2}=TrainingAccuracy;
+      varargout{3}=Model;
+      varargout{4}=T;
+      varargout{5}=P;
+      varargout{6}=Y;
+      
+    case 'test'
+      disp('Testing-Validation')   
+      Model = varargin{2};
+      test_data=varargin{3};
+      TV.T=test_data(:,1);TV.P=test_data(:,2:size(test_data,2));
+      %
+      nClass=Model.nClass;
+      IW=Model.IW;
+      Bias=Model.Bias;
+      beta=Model.OutputWeight;
+      ActivationFunction=Model.ActivationFunction;
+      nTestingData=size(TV.P,1);
+      temp_TV_T=zeros(nTestingData,nClass);
+      for i = 1:nTestingData
+          temp_TV_T(i,TV.T(i,1))=1;
+      end
+      %TV.T=temp_TV_T*2-1;
+      TV.T=temp_TV_T;
+      start_time_test=cputime; 
+      %
+      switch lower(ActivationFunction)
+          case{'rbf'}
+              HTest = RBFun(TV.P, IW, Bias);
+          case{'sig'}
+              HTest = SigActFun(TV.P, IW, Bias);
+          case{'soft'}
+              HTest = SoftMaxFun(TV.P, IW, Bias);
+          case{'sin'}
+              HTest = SinActFun(TV.P, IW, Bias);
+          case{'hardlim'}
+              HTest = HardlimActFun(TV.P, IW, Bias);
+      end
+      TY=HTest * beta;
+      end_time_test=cputime;
+      TestingTime=end_time_test-start_time_test;
+      MissClassificationRate_Testing=0;
+      m_expected=zeros(1,nTestingData);
+      m_actual=zeros(1,nTestingData);
+      for i = 1 : nTestingData
+        [x, label_index_expected]=max(TV.T(i,:));
+        [x, label_index_actual]=max(TY(i,:));
+        m_expected(1,i)=label_index_expected;
+        m_actual(1,i)=label_index_actual;
+        if label_index_actual~=label_index_expected
+            MissClassificationRate_Testing=MissClassificationRate_Testing+1;
+%             str = sprintf('Expected %d but actual %d\n',label_index_expected,label_index_actual);
+%             disp(str);
+        end
+    end
+    TestingAccuracy=1-MissClassificationRate_Testing/nTestingData
+    %edit_dist=levenshtein(m_actual,m_expected)/nTestingData
+    Test.rank_HTest=rank(HTest);
+    Test.rank_P=rank(TV.P);
+    %Test.confusion_mat=confusionmat(m_expected,m_actual);
+    Test.TestingTime=TestingTime;
+    Test.TestingAccuracy=TestingAccuracy;
+    %Test.edit_dist=edit_dist;
+    Test.m_actual=m_actual;
+    Test.m_expected=m_expected;
+    varargout{1}=TestingTime;
+    varargout{2}=TestingAccuracy;
+    varargout{3}=Test;
+%
+end
+
